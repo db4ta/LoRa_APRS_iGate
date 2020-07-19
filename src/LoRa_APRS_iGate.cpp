@@ -1,5 +1,4 @@
 #include <Arduino.h>
-#include <WiFiMulti.h>
 #include <NTPClient.h>
 #include <WiFiUdp.h>
 #include <ArduinoOTA.h>
@@ -10,20 +9,18 @@
 #include "settings.h"
 #include "display.h"
 #include "power_management.h"
+#include "web_config.h"
 
-WiFiMulti WiFiMulti;
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, 60*60);
-APRS_IS aprs_is(USER, PASS, TOOL, VERS);
 #if defined(ARDUINO_T_Beam) && !defined(ARDUINO_T_Beam_V0_7)
 PowerManagement powerManagement;
 #endif
+APRS_IS * aprs_is = NULL;
 LoRa_APRS lora_aprs;
 
 int next_update = -1;
 
-void setup_wifi();
-void setup_ota();
 void setup_lora();
 void setup_ntp();
 
@@ -49,37 +46,45 @@ void setup()
 
 	setup_display();
 	
-	delay(500);
+	delay(1000);
 	Serial.println("[INFO] LoRa APRS iGate by OE5BPA (Peter Buchegger)");
 	show_display("OE5BPA", "LoRa APRS iGate", "by Peter Buchegger", 2000);
 
-	setup_wifi();
-	setup_ota();
-	setup_lora();
-	setup_ntp();
-
-	APRSMessage msg;
-	msg.setSource(USER);
-	msg.setDestination("APLG0");
-	msg.getAPRSBody()->setData(String("=") + BEACON_LAT_POS + "I" + BEACON_LONG_POS + "&" + BEACON_MESSAGE);
-	BeaconMsg = msg.encode();
-	
-	delay(500);
+	web_config::setup();
 }
+
+bool need_reconfigure = true;
 
 // cppcheck-suppress unusedFunction
 void loop()
 {
-	timeClient.update();
-	ArduinoOTA.handle();
-	if(WiFiMulti.run() != WL_CONNECTED)
+	web_config::doLoop();
+	if(web_config::connectionState() != IOTWEBCONF_STATE_ONLINE)
 	{
-		Serial.println("[ERROR] WiFi not connected!");
-		show_display("ERROR", "WiFi not connected!");
-		delay(1000);
+		need_reconfigure = true;
 		return;
 	}
-	if(!aprs_is.connected())
+	if(need_reconfigure)
+	{
+		setup_lora();
+		setup_ntp();
+		if(aprs_is)
+		{
+			delete aprs_is;
+			aprs_is = NULL;
+		}
+		aprs_is = new APRS_IS(web_config::getIsUser(), web_config::getIsPassword(), TOOL, VERS);
+
+		APRSMessage msg;
+		msg.setSource(web_config::getIsUser());
+		msg.setDestination("APLG0");
+		msg.getAPRSBody()->setData(String("=") + web_config::getBeaconPosLat() + "I" + web_config::getBeaconPosLong() + "&" + web_config::getBeaconMsg());
+		BeaconMsg = msg.encode();
+		
+		need_reconfigure = false;
+	}
+	timeClient.update();
+	/*if(!aprs_is.connected())
 	{
 		Serial.print("[INFO] connecting to server: ");
 		Serial.print(SERVER);
@@ -135,66 +140,7 @@ void loop()
 		Serial.println(lora_aprs.getMessageSnr());
 
 		aprs_is.sendMessage(msg->encode());
-	}
-}
-
-void setup_wifi()
-{
-	WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE);
-	WiFi.setHostname(USER);
-	WiFiMulti.addAP(WIFI_NAME, WIFI_KEY);
-	Serial.print("[INFO] Waiting for WiFi");
-	show_display("INFO", "Waiting for WiFi");
-	while(WiFiMulti.run() != WL_CONNECTED)
-	{
-		Serial.print(".");
-		show_display("INFO", "Waiting for WiFi", "....");
-		delay(500);
-	}
-	Serial.println("");
-	Serial.println("[INFO] WiFi connected");
-	Serial.print("[INFO] IP address: ");
-	Serial.println(WiFi.localIP());
-	show_display("INFO", "WiFi connected", "IP: ", WiFi.localIP().toString(), 2000);
-}
-
-void setup_ota()
-{
-	ArduinoOTA
-		.onStart([]()
-		{
-			String type;
-			if (ArduinoOTA.getCommand() == U_FLASH)
-				type = "sketch";
-			else // U_SPIFFS
-				type = "filesystem";
-			Serial.println("Start updating " + type);
-			show_display("OTA UPDATE", "Start update", type);
-		})
-		.onEnd([]()
-		{
-			Serial.println();
-			Serial.println("End");
-		})
-		.onProgress([](unsigned int progress, unsigned int total)
-		{
-			Serial.print("Progress: ");
-			Serial.print(progress / (total / 100));
-			Serial.println("%");
-			show_display("OTA UPDATE", "Progress: ", String(progress / (total / 100)) + "%");
-		})
-		.onError([](ota_error_t error) {
-			Serial.print("Error[");
-			Serial.print(error);
-			Serial.print("]: ");
-			if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
-			else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
-			else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
-			else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
-			else if (error == OTA_END_ERROR) Serial.println("End Failed");
-		});
-	ArduinoOTA.setHostname(USER);
-	ArduinoOTA.begin();
+	}*/
 }
 
 void setup_lora()
